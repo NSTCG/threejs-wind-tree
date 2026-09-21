@@ -287,15 +287,20 @@ function disposeTree(){
   treeGroup=null;
 }
 
-/* wind sway shared by wood + foliage: a continuous field of position, so
-   branch bases and trunk never detach; per-branch phase adds fine flutter */
-const WIND_GLSL = `
-  float hgt  = clamp(P.y / max(uTreeH, 0.001), 0.0, 1.0);
-  float gAmp = uWindAmp * (0.04 + 0.24*hgt*hgt) * AMPF;
-  float G    = sin(uTime*1.4 + P.y*0.9 + P.x*0.35)*0.6
-             + sin(uTime*2.7 + P.y*1.6)*0.4;
-  transformed.x += uWindDir.x * G * gAmp;
-  transformed.z += uWindDir.z * G * gAmp;`;
+/* wind sway shared by wood + foliage. It is a CONTINUOUS function of world
+   position only — vertices that share a point (branch↔trunk, leaf↔twig)
+   always move identically, so nothing can ever detach. Base pinned via hgt,
+   fine flutter comes from a smooth spatial phase (no per-branch randomness). */
+const WIND_FN_GLSL = `
+  vec3 windOffset(vec3 P){
+    float hgt  = clamp(P.y / max(uTreeH, 0.001), 0.0, 1.0);
+    float gAmp = uWindAmp * (0.04 + 0.24*hgt*hgt) * hgt;
+    float G    = sin(uTime*1.4 + P.y*0.9 + P.x*0.35)*0.6
+               + sin(uTime*2.7 + P.y*1.6 + P.z*0.5)*0.4;
+    float ph   = dot(P, vec3(1.7, 2.3, 1.9));
+    float fl   = sin(uTime*5.2 + ph)*0.10 + sin(uTime*7.9 + ph*2.3)*0.05;
+    return uWindDir * (G + fl) * gAmp;
+  }`;
 
 function buildTree(){
   disposeTree();
@@ -342,14 +347,6 @@ function buildTree(){
 
   /* ---- merge trunk + every branch into ONE geometry ---- */
   const geos=[];
-  function addFlexAttrs(g, flexFn, phase, level){
-    const p=g.attributes.position, n=p.count;
-    const flex=new Float32Array(n), ph=new Float32Array(n), lv=new Float32Array(n);
-    for(let i=0;i<n;i++){ flex[i]=flexFn(i); ph[i]=phase; lv[i]=level; }
-    g.setAttribute('aFlex',  new THREE.BufferAttribute(flex,1));
-    g.setAttribute('aPhase', new THREE.BufferAttribute(ph,1));
-    g.setAttribute('aLevel', new THREE.BufferAttribute(lv,1));
-  }
   {
     const tg=new THREE.CylinderGeometry(S.trunk*0.42, S.trunk, H, 10, 6, false);
     const p=tg.attributes.position;
@@ -358,16 +355,27 @@ function buildTree(){
       p.setX(i, p.getX(i) + Math.sin(f*5.2)*f*0.14 + Math.sin(f*11+2)*f*0.05);
     }
     tg.computeVertexNormals();
-    addFlexAttrs(tg, i=>((p.getY(i)+H/2)/H)*0.35, 0, 0);
     tg.translate(0, H/2, 0);            // lift trunk so it spans y=0..H (was centred at origin)
     geos.push(tg);
   }
   for(const b of branches){
     const g=new THREE.CylinderGeometry(b.radius*0.55, b.radius, b.len, 7, 1);
     g.translate(0, b.len/2, 0);
-    addFlexAttrs(g, i=>g.attributes.position.getY(i)/b.len, rand()*Math.PI*2, b.level);
     g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, b.dir.clone().normalize()));
     g.translate(b.origin.x, b.origin.y, b.origin.z);
+    geos.push(g);
+  }
+  // central leader: hides the flat trunk top cap so it never looks cut
+  {
+    const o=new THREE.Vector3(0,H*0.8,0),
+          d=new THREE.Vector3(rand(-0.12,0.12),1,rand(-0.12,0.12)).normalize(),
+          len=H*0.24;
+    branches.push({origin:o, dir:d, len, radius:S.trunk*0.5, level:0});
+    tips.push({pos:o.clone().addScaledVector(d,len), level:0});
+    const g=new THREE.CylinderGeometry(S.trunk*0.28, S.trunk*0.5, len, 7, 1);
+    g.translate(0, len/2, 0);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, d));
+    g.translate(o.x, o.y, o.z);
     geos.push(g);
   }
   const woodGeo=mergeGeometries(geos, false);
@@ -378,14 +386,9 @@ function buildTree(){
     Object.assign(shader.uniforms, windU);
     shader.vertexShader =
       'uniform float uTime; uniform vec3 uWindDir; uniform float uWindAmp; uniform float uTreeH;\n'
-      +'attribute float aFlex; attribute float aPhase; attribute float aLevel;\n'
+      + WIND_FN_GLSL
       + shader.vertexShader.replace('#include <begin_vertex>',
-        '#include <begin_vertex>\n{\n'
-        + WIND_GLSL.replace(/P\b/g,'position').replace('AMPF','(1.0 + 0.15*aLevel)')
-        + '\n  float f = aFlex*aFlex;\n'
-        + '  float fl = sin(uTime*5.2 + aPhase)*0.12 + sin(uTime*7.9 + aPhase*2.3)*0.06;\n'
-        + '  transformed.x += uWindDir.x * fl * gAmp * (0.35 + 0.65*f);\n'
-        + '  transformed.z += uWindDir.z * fl * gAmp * (0.35 + 0.65*f);\n}\n');
+        '#include <begin_vertex>\n transformed += windOffset(position);');
   };
   const woodMesh=new THREE.Mesh(woodGeo, woodMat);
   woodMesh.castShadow=true; woodMesh.receiveShadow=true; woodMesh.frustumCulled=false;
@@ -399,17 +402,20 @@ function buildTree(){
   const leafMat=new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.85, side:THREE.DoubleSide });
   leafMat.onBeforeCompile = shader=>{
     Object.assign(shader.uniforms, windU);
+    // displace in INSTANCE space (== world, treeGroup is untransformed) so the
+    // exact same field moves wood and foliage -> leaves stay glued to twigs
     shader.vertexShader =
       'uniform float uTime; uniform vec3 uWindDir; uniform float uWindAmp; uniform float uTreeH;\n'
-      + shader.vertexShader.replace('#include <begin_vertex>',
-        '#include <begin_vertex>\n#ifdef USE_INSTANCING\n{\n'
-        +'  vec3 ip = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);\n'
-        + WIND_GLSL.replace(/P\b/g,'ip').replace('AMPF','1.15')
-        + '\n  float phh = dot(ip, vec3(12.9898, 78.233, 37.719));\n'
-        + '  float fl = sin(uTime*5.2 + phh)*0.12 + sin(uTime*7.9 + phh*2.3)*0.06;\n'
-        + '  transformed += uWindDir * (fl * gAmp);\n'
-        + '  float ang = fl*2.0, cs = cos(ang), sn = sin(ang);\n'
-        + '  transformed.xz = mat2(cs, -sn, sn, cs) * transformed.xz;\n}\n#endif');
+      + WIND_FN_GLSL
+      + shader.vertexShader.replace('#include <project_vertex>',
+        '#ifdef USE_INSTANCING\n'
+        +'  vec4 mvPosition = instanceMatrix * vec4( transformed, 1.0 );\n'
+        +'  mvPosition.xyz += windOffset( mvPosition.xyz );\n'
+        +'#else\n'
+        +'  vec4 mvPosition = vec4( transformed, 1.0 );\n'
+        +'#endif\n'
+        +'  mvPosition = modelViewMatrix * mvPosition;\n'
+        +'  gl_Position = projectionMatrix * mvPosition;');
   };
 
   const foliage=new THREE.InstancedMesh(leafGeoShared, leafMat, total);
