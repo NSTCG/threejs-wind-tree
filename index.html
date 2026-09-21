@@ -243,12 +243,19 @@ const wind = {
 let treeGroup=null, barkTex=null;
 const UP = new THREE.Vector3(0,1,0);
 const leafGeoShared = (()=>{
-  const g=new THREE.PlaneGeometry(0.34,0.26,2,1);
-  const p=g.attributes.position;
-  for(let i=0;i<p.count;i++)
-    p.setZ(i, Math.sin(p.getX(i)*5.5)*0.045 + Math.cos(p.getY(i)*7.0)*0.03);
-  g.computeVertexNormals();
-  return g;
+  // one "leaf" = two crossed curved planes -> reads as volumetric from every angle
+  function quad(){
+    const g=new THREE.PlaneGeometry(0.36,0.28,2,1);
+    const p=g.attributes.position;
+    for(let i=0;i<p.count;i++)
+      p.setZ(i, Math.sin(p.getX(i)*5.5)*0.05 + Math.cos(p.getY(i)*7.0)*0.035);
+    g.computeVertexNormals();
+    return g;
+  }
+  const a=quad(), b=quad();
+  b.rotateY(Math.PI/2);                 // cross at 90°
+  const c=quad(); c.rotateY(Math.PI/4); // +45° for fuller coverage
+  return mergeGeometries([a,b,c], false);
 })();
 
 function makeBarkTexture(){
@@ -352,6 +359,7 @@ function buildTree(){
     }
     tg.computeVertexNormals();
     addFlexAttrs(tg, i=>((p.getY(i)+H/2)/H)*0.35, 0, 0);
+    tg.translate(0, H/2, 0);            // lift trunk so it spans y=0..H (was centred at origin)
     geos.push(tg);
   }
   for(const b of branches){
