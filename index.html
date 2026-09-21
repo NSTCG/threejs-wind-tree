@@ -338,12 +338,17 @@ function buildTree(){
       tips.push({ pos: origin.clone().addScaledVector(dir,len), level });
     }
   }
+  // the trunk wobbles (see twist below) — this is its EXACT centreline x at height y,
+  // so root branches attach to where the wood actually is, never in mid-air
+  const trunkX = y => { const f=y/H; return Math.sin(f*5.2)*f*0.14 + Math.sin(f*11+2)*f*0.05; };
   const rootN=Math.max(3, effBpl+1);
   for(let i=0;i<rootN;i++){
     const a=(i/rootN)*Math.PI*2 + rand(-0.3,0.3);
     let tilt = isPine? rand(0.5,0.8) : isBirch? rand(1.0,1.5) : rand(0.7,1.2);
     const dir=new THREE.Vector3(Math.cos(a)*Math.sin(tilt), Math.cos(tilt), Math.sin(a)*Math.sin(tilt)).normalize();
-    addBranch(new THREE.Vector3(rand(-0.04,0.04), H*rand(0.55,0.95), rand(-0.04,0.04)), dir, H*rand(0.28,0.4), S.trunk*0.75, 0);
+    const y=H*rand(0.55,0.95);
+    // origin sits ON the (twisted) centreline + tiny jitter, always deep inside the wood
+    addBranch(new THREE.Vector3(trunkX(y)+rand(-0.02,0.02), y, rand(-0.02,0.02)), dir, H*rand(0.28,0.4), S.trunk*0.6, 0);
   }
 
   /* ---- merge trunk + every branch into ONE geometry ---- */
@@ -376,7 +381,7 @@ function buildTree(){
   }
   // central leader: hides the flat trunk top cap so it never looks cut
   {
-    const o=new THREE.Vector3(0,H*0.8,0),
+    const o=new THREE.Vector3(trunkX(H*0.8),H*0.8,0),
           d=new THREE.Vector3(rand(-0.12,0.12),1,rand(-0.12,0.12)).normalize(),
           len=H*0.24;
     branches.push({origin:o, dir:d, len, radius:S.trunk*0.5, level:0});
