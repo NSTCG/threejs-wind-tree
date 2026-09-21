@@ -300,7 +300,8 @@ const WIND_FN_GLSL = `
     float ph   = dot(P, vec3(1.7, 2.3, 1.9));
     float fl   = sin(uTime*5.2 + ph)*0.10 + sin(uTime*7.9 + ph*2.3)*0.05;
     return uWindDir * (G + fl) * gAmp;
-  }`;
+  }
+`;
 
 function buildTree(){
   disposeTree();
