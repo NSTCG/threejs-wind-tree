@@ -360,11 +360,19 @@ function buildTree(){
     geos.push(tg);
   }
   for(const b of branches){
-    const g=new THREE.CylinderGeometry(b.radius*0.55, b.radius, b.len, 7, 1);
-    g.translate(0, b.len/2, 0);
+    // extend non-root branches slightly back INTO the parent so the solids
+    // overlap in volume (cylinders meeting at a point leave a sky-gap wedge)
+    const ov = b.level>0 ? b.radius*0.6 : 0;
+    const g=new THREE.CylinderGeometry(b.radius*0.55, b.radius, b.len+ov, 7, 1);
+    g.translate(0, (b.len+ov)/2 - ov, 0);   // spans -ov .. len
     g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, b.dir.clone().normalize()));
     g.translate(b.origin.x, b.origin.y, b.origin.z);
     geos.push(g);
+    // joint knob at the branch base: guarantees solid overlap with the parent
+    // for ANY tilt angle (its plane cuts the knob, so half is inside each side)
+    const jg=new THREE.SphereGeometry(b.radius*1.05, 7, 5);
+    jg.translate(b.origin.x, b.origin.y, b.origin.z);
+    geos.push(jg);
   }
   // central leader: hides the flat trunk top cap so it never looks cut
   {
